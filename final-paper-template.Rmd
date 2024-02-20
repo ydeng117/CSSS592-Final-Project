@@ -1,0 +1,77 @@
+---
+title: "Final project"
+author: "Sample Student"
+date: "Calendar date"
+output:
+    html_document:
+        theme: readable
+---
+
+---
+references:
+- id: Lastname2000
+  title: "Dramatic statement: a slightly more nuanced secondary title."
+  author:
+  - family: Lastname
+    given: Firstname
+  container-title: Journal Name
+  volume: 5
+  page: 100-150
+  type: article-journal
+  issued:
+    year: 2000
+    
+- id: Bigdeal2009
+  title: "Studies on everything"
+  author:
+  - family: Bigdeal
+    given: O
+  - family: Bigdeal
+    given: P
+  container-title: "A chapter in the book of everything"
+  page: 50
+  type: chapter
+  issued:
+    year: 2009
+...
+
+<style type="text/css">
+h1, h2, h3, h4, h5, h6 {
+    font-family: Times New Roman;
+    font-size: 18px;
+}
+body, td {
+    font-family: Times New Roman;
+    font-size: 14px;
+}
+code.r{
+    font-size: 12px;
+}
+</style>
+
+<div style="line-height: 2em;">
+
+## Abstract (<1/3 page or about 250 words)
+
+Include your abstract.
+
+## Introduction/Motivation and study objectives (<1/3 page)
+
+Include a clearly stated research question that your project will answer and all relevant theoretical considerations. You should make references to some citations: we view @Lastname2000 as foundational work. This is a cool fact [@Bigdeal2009].
+
+
+## Approach (< 5 pages total)
+
+This section should contain: Data set description and exploratory analyses; technical description of models; results and interpretation.
+
+This section should describe your analytic approach, introduce necessary notation and provide at least one key equation.
+
+## Conclusion (<1/3 page)
+
+The conclusion section should use the results that were obtained to answer the research question, and discuss difficulties and limitations of the analyses if appropriate.
+
+## References
+
+Provide references. Anything you list in the YAML references header near the beginning of the document will populate here.
+
+</div>
