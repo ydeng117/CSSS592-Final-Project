@@ -1,6 +1,6 @@
 ---
-title: "Final project"
-author: "Sample Student"
+title: "Impact of Labor Union on Firm Outcomes"
+author: "Yehong Deng; Ramses Llobet; Chidozie Iwu"
 date: "Calendar date"
 output:
     html_document:
