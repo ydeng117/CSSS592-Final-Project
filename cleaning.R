@@ -2,335 +2,372 @@
 rm(list = ls())
 
 
-setwd(dirname(rstudioapi::getActiveDocumentContext()$path)) # To set current folder as your wd.
-print(getwd()) # Check that your wd is correct
-dir()
-
-library(Hmisc)   # need to load first for incompatibility with dplyr
-library(survey) # for survey weights
+library(questionr)
+library(nlme)
+library(tinytable) # For LaTeX tables
 library(tidyverse)
 
+options(digits = 3) # how many significant digits to print by default
+options("tinytable_tabularray_placement" = "H") # for LaTeX
 
-df <- haven::read_dta("data/BP_panelgen_9321_v2_en.dta")
+
+# load data
+
+df <- 
+  haven::read_dta("data/BP_panelgen_9321_v2_en.dta") %>%
+  # Turn "-9" N.S. into NA
+  mutate_all(~ ifelse(. == -9, NA, .))
 
 
 
-# clean founding year of estbalishment and work council
+# clean founding year of establishment and work council
 
 
 df %>% 
   select(
-    fycoun_c,     # Founding year of works/staff council
+    idnum,
     wcounc_b,     # Works/staff council
-    pubow_b      # Founding year of establishment in today's form
-  ) %>% print(n=1000)
+    empt_c,
+    emppt_b,
+    empdis_c,     # No. dismissals by employer
+    fycoun_c,     # Founding year of works/staff council
+    fyear_c,      # Founding year of establishment in today's form
+    whire_b,      # Demand for new hires, first half curr. year
+    esitl_d,      # Profit situation, prev. financial year
+    newf_b,       # Type of formation: start-up
+    outf_b       # Type of formation: spin-off
+  ) %>% freq.na()
 
+
+##### Create long df with time variables:-------------------------------------------
+
+## Create variable of cumulative period counts since work councils foundation
+
+# what to do with "9999" --> long time
+
+# Impute the data  "9999" == 1995, and truncate years earlier 1995
+
+(foundworks <-
+   df %>% 
+   select(
+     idnum,year,fycoun_c
+   ) %>% 
+   na.omit() %>% 
+   distinct(idnum, .keep_all = TRUE) %>%
+   mutate(
+     fycoun = case_when(
+       # Truncate until 1995
+       fycoun_c <= 1998 ~ 1998,
+       fycoun_c == 9999 ~ 1998,
+       fycoun_c > 1998 & fycoun_c <= 2021 ~ fycoun_c
+     )
+   ))
+
+(yrs <- levels(as.factor(foundworks$fycoun)))
+
+# Create a sequence of years from 1998 to 2021
+
+(years_sequence <- 1998:2021)
+
+# Expand the dataset to include all combinations of idnum and years sequence
+(foundworks <- 
+    foundworks %>%
+    expand(idnum, year = years_sequence) %>%
+    group_by(idnum) %>% 
+    mutate(time=row_number()) %>% ungroup() %>% 
+    left_join(foundworks %>% select(idnum,year,fycoun) , by = c("idnum","year")) %>%
+    group_by(idnum) %>% 
+    # impute foundation year in each case's row
+    fill(fycoun, .direction = "down") %>%
+    fill(fycoun, .direction = "up") %>% 
+    mutate(
+      # create a time variable
+      council_spell = ifelse(year >= fycoun, year - fycoun + 1, 0),
+      # create date of creation of wcouncil to check consistency with wcounc_b
+      wcounc_b2 = ifelse(year >= fycoun, 1, 0)
+    ) %>% ungroup())
+
+
+## Create variable of cumulative period counts since establishment foundation
+
+(foundestab <- df %>%  select(idnum,year,fyear_c) %>% 
+    na.omit() %>% 
+    distinct(idnum, .keep_all = TRUE))
+
+(yrs <- levels(as.factor(foundestab$fyear_c)))
+
+# Create a sequence of years from 1901 to 2020
+
+(years_sequence <- as.numeric(first(yrs)):as.numeric(last(yrs)))
+
+# Create variables of period change
+
+
+# Expand the dataset to include all combinations of idnum and years sequence
+
+(foundestab <- 
+    foundestab %>%
+    expand(idnum, year = years_sequence) %>%
+    group_by(idnum) %>%  
+    left_join(foundestab, c("idnum","year")) %>%
+    # impute foundation year in each case's row
+    fill(fyear_c, .direction = "down") %>%
+    fill(fyear_c, .direction = "up") %>% rename(fyear=fyear_c) %>% 
+    mutate(
+      # create a time variable
+      estab_spell = ifelse(year >= fyear, year - fyear + 1, 0)) %>% 
+    ungroup())
+
+
+df_long <-
+  foundestab %>% 
+  # merge into the long data frame
+  right_join(foundworks, by =c("idnum","year"))
+
+
+# remove objects from environment
+
+rm(years_sequence, foundworks, foundestab, yrs)
+
+
+##### Cleaning sector classifications:-------------------------------------------
 
 ## Different sector classifications to harmonize:
 
-df %>% select(idnum,secgr1_d,secgr2_d,secgr3_d,secgr4_d) %>% print(n=100)
+df %>% select(idnum,brval_b,br93_d,br00_d,br09_d) %>% print(n=100)
 
-df %>% select(idnum,br93_d,br00_d,br09_d)
+df %>% select(br93_d,br00_d,br09_d)
 
-## Turn "-9" N.S. into NA
+## harmonization of sector classifications
 
-df[df==-9] <- NA
-
-# select necessary variables
-
-df_c <- 
+df <-
   df %>% 
+  mutate(
+    sector = case_when(
+      # Agriculture
+      br93_d %in% 1 ~ "agriculture",
+      br00_d %in% 1 ~ "agriculture",
+      br09_d %in% 1 ~ "agriculture",
+      # Mining and Quarrying
+      br93_d %in% 2 ~ "mining",
+      br00_d %in% 2 ~ "mining",
+      br09_d %in% 2 ~ "mining",
+      # Manufacturing
+      br93_d %in% 3:16 ~ "manufacturing",
+      br00_d %in% 3:18 ~ "manufacturing",
+      br09_d %in% 4:16 ~ "manufacturing",
+      # Construction
+      br93_d %in% 17:18 ~ "construction",
+      br00_d %in% 19:20 ~ "construction",
+      br09_d %in% 17:19 ~ "construction",
+      # wholesale and retail
+      br93_d %in% 19 ~ "wholesretail",
+      br00_d %in% 21:23 ~ "wholesretail",
+      br09_d %in% 20:22 ~ "wholesretail",
+      # transport and communication
+      br93_d %in% 20 ~ "transcom",
+      br00_d %in% 24:25 ~ "transcom",
+      br09_d %in% 23:24 ~ "transcom",
+      # finance, banking and real state
+      br93_d %in% c(21:22,31) ~ "finance",
+      br00_d %in% c(26:27,31) ~ "finance",
+      br09_d %in% 26:27 ~ "finance",
+      # restaurants and hotels
+      br93_d %in% 23 ~ "resthotels",
+      br00_d %in% 33 ~ "resthotels",
+      br09_d %in% 25 ~ "resthotels",
+      # education
+      br93_d %in% 26 ~ "edu",
+      br00_d %in% 34 ~ "edu",
+      br09_d %in% 37 ~ "edu",
+      # health and social services
+      br93_d %in% c(24,28) ~ "health",
+      br00_d %in% 35 ~ "health",
+      br09_d %in% 38 ~ "health",
+      # business services, consulting and auxiliary
+      br93_d %in% c(25,29,30,34,35,38) ~ "buservices",
+      br00_d %in% c(28,29,30,32,36,38,40) ~ "buservices",
+      br09_d %in% c(28:36,41) ~ "buservices",
+      # Public sector
+      br93_d %in% 39:41 ~ "public",
+      br00_d %in% 41 ~ "public",
+      br09_d %in% 43 ~ "public",
+      # Arts and entertainment
+      br93_d %in% 27 ~ "art",
+      br00_d %in% 37 ~ "art",
+      br09_d %in% 39 ~ "art",
+      # Others
+      br93_d %in% 42 ~ "others",
+      br00_d %in% c(39,42) ~ "others",
+      br09_d %in% c(42,44) ~ "others"
+    )
+  )
+
+
+
+##### variable selection and merging data:--------------------------------------------
+
+
+
+
+df_long <-
+  df %>% 
+  # select variables of interest
   select(
     ## (A) General information about the establishment
-    idnum,        # id number
-    year,         # perido
-    # intcap_d,     # Interview method
-    wcounc_b,     # Works/staff council
-    # newf_b,       # Type of formation: start-up
-    # outf_b,       # Type of formation: spin-off
-    
-    
-    
-    # note that there are three variables of current industrial classificaiton
-    # br93_d,, br00_d, br09_d,     # Current industrial classification (in case of change)
-    
+    idnum,          # id number
+    year,           # period
+    sector,         # sector indicator
+    wcounc_b,       # Works/staff council
+    newf_b,         # Type of formation: start-up
+    outf_b,         # Type of formation: spin-off
+    ## (K) Business policy and business development
+    esitl_d,      # Profit situation, prev. financial year
     ## (M) Wages and salary
-    wsum_c,       # Gross-wage/total-salary (DM/EUR)/(Panel: EUR)
-    #wabstd_b,     # Wages/salaries above negotiated wage
-    wagree_d,     # Applicability of sectoral collective agreement
-    #brval_b,      # Industry classific. acc. to Emp. Agency still valid?
-    
-    ## Operational investment and innovation
-    # ininvb_b,    # Invest. in real estate and buildings
-    # ininvc_b,    # Invest. in communication technology/data processing
-    # ininvd_b,    # Invest. in other production facilities
-    # ininve_b,    # Invest. in means of transport/transportation systems
-    # ininvf_b,    # No investments
-    
-    ## (O) Attrition of workforce in first half of survey year
-    # empter_c,    # No. resignation on part of employee
-    # empdis_c,    # No. dismissals by employer
-    # appdis_c,    # No. not taken over after apprent. training
-    # endcon_c,    # No. expiring fixed-term contracts
-    # sepmut_c,    # No. amicable cancellations
-    # segtra_c,    # No. transfers to other company divisions
-    # sepret_c,    # No. retirements (incl. early retirements)
-    # sepall_c,    # No. empl. leaving in total
-    # sepels_c,    # No. empl. leaving for other reasons
-
+    wsum_c,         # Gross-wage/total-salary (DM/EUR)/(Panel: EUR)
+    wagree_d,       # Applicability of sectoral collective agreement
     ## (P) Personnel fluctuations in first half of survey year
-    # nhires_b,    # New hires, first half curr. year
-    # whire_b,     # Demand for new hires, first half curr. year
-    # nhisie_c,    # No. new hires, white-coll./clerks, simple tasks
-    # nhispw_c,    # No. new hires, blue-coll., skilled workers, 1.hy.
-    # nhial_c,     # No. new hires, in total, 1.hy.
-    # nhique_c,    # No. new hires, white-coll./clerks, qual. tasks, 1.hy.
-    # nhiunw_c,    # No. new hires, blue-coll., unskilled tasks, 1.hy.
-
+    whire_b,        # Demand for new hires, first half curr. year
     ## (Q) Personnel structure
-    empt_c     # No. employees, in total
-    # empw_c,     # No. employees, women
-    # emppt_b,    # Part-time employment
-    # empft_b,    # Fixed-term employment
-    # empft_c,    # No. empl., fixed-term, in total
-    # empfw_c,    # No. empl., fixed-term, women
-    # emppt_c,    # No. empl., part-time, in total
-    # emppw_c,    # No. empl., part-time, women
-
-    # Additional information
-    #secgr4_d,   # Industrial classification, 19 categories
-    #es1996_c   # Panel weighting factor since 1996
-
-    #jahr        # survey year
-    
+    empt_c,         # No. employees, in total
+    emppt_c,        # No. empl., part-time, in total
+    empw_c          # No. employees, women
   ) %>% 
-  ## remove "-9 n.s." observations
-  mutate(wsum_c = ifelse(wsum_c <= 0, NA, wsum_c),
-         paypp = wsum_c/empt_c,
-         paypp_ln = log(paypp),
-         wcouncil = ifelse(wcounc_b==-9,NA,wcounc_b-1),
-         wagree = ifelse(wagree_d==-9,NA,wagree_d-1),
-         workinst = ifelse(wcouncil==1 & wagree==1,1,0),
-         wcouncil_f = factor(wcouncil,
-                             levels=c(0,1),
-                             labels=c("No Works Council","Presence of Works Council")),
-         wagree_f = factor(wagree,
-                             levels=c(0,1),
-                             labels=c("Not Covered","Covered by Sector Agreement")),
-         workinst_f = factor(workinst,
-                           levels=c(0,1),
-                           labels=c("No interaction","interaction"))) %>% 
-  # filter 10 or more employees
-  filter(empt_c >= 10) %>% 
-  na.omit()
+  # merge with long dataset
+  left_join(df_long,by=c("idnum","year")) %>% 
+  rename(whire = whire_b,
+         profit = esitl_d,
+         startup = newf_b,
+         spinoff = outf_b,
+         wcouncil2 = wcounc_b2,
+         emp = empt_c) %>%  
+  # make transformations
+  mutate(
+    # turn as NA negative values of wage
+    wsum_c = ifelse(wsum_c <= 0, NA, wsum_c),
+    # outcome variable
+    average_pay = wsum_c/emp,
+    average_pay_ln = log(average_pay),
+    wcouncil = ifelse(wcounc_b==2,1,0),
+    wagree = ifelse(wagree_d==2,1,0),
+    wcouncil_f = factor(wcouncil,
+                        levels=c(0,1),
+                        labels=c("NoWC","WC")),
+    wagree_f = factor(wagree,
+                      levels=c(0,1),
+                      labels=c("NoSA","SA")),
+    sector = factor(sector,
+                    levels =c(
+                      "public",
+                      "agriculture",
+                      "art",
+                      "buservices",
+                      "construction",
+                      "edu",
+                      "finance",
+                      "health",
+                      "manufacturing",
+                      "mining",
+                      "others",
+                      "resthotels",
+                      "transcom",
+                      "wholesretail"
+                    )),
+    # remove level 6 NA in profit variable
+    profit = ifelse(profit==6,NA,profit),
+    profit_f = factor(profit,
+                      levels=c(5:1),
+                      labels=c(
+                        "unsatisfactory",
+                        "sufficient",
+                        "satisfactory",
+                        "good",
+                        "very good"
+                      )),
+    # percentage of temporal employment
+    empt=round(emppt_c/emp,3),
+    empt=ifelse(empt>=1,NA,empt),
+    # percentage of women employment
+    empw=round(empw_c/emp,3)
+  ) %>% 
+  # filter 5 or more employees, minimum requirement for WC
+  filter(emp >= 5) %>% 
+  # firs selection
+  select(idnum,year,fycoun,fyear,council_spell,
+         estab_spell,wcouncil,sector,emp,average_pay,
+         average_pay_ln,wagree,wcouncil_f,wagree_f,whire,
+         profit,startup,spinoff,empt,empw) %>%
+  # remove NAs from minimum theoretical set
+  filter(!is.na(average_pay)) %>% 
+  filter(!is.na(wcouncil)) %>% 
+  filter(!is.na(year)) %>% 
+  filter(!is.na(sector)) %>% 
+  mutate(
+    # firm size
+    firmsize = case_when(
+      emp <= 10 ~ 1,
+      emp > 10 &
+        emp <= 50 ~ 2,
+      emp > 50 &
+        emp <= 250 ~ 3,
+      emp > 250 ~ 4,
+    ),
+    firmsize_f = factor(firmsize,
+                        levels=1:4,
+                        labels=c(
+                          "less10","less50","less250","more250"
+                        ))
+  )
 
-summary(df_c)
+## sample - time window
+
+(years_sequence <- 1995:2021)
+
+df_long <-
+  df_long %>%
+  # create a time variable
+  group_by(idnum) %>%
+  select(idnum,year) %>% 
+  distinct(idnum, .keep_all = TRUE) %>% ungroup() %>% 
+  expand(idnum, year = years_sequence) %>% 
+  mutate(time=row_number()) %>% 
+  right_join(df_long,by=c("idnum","year"))
+
+# final sample
+
+names(df_long)
+
+df_long <-
+  df_long %>% 
+  select(
+    # identifiers
+    idnum,year,time,
+    # outcome
+    average_pay,average_pay_ln,
+    # treatments
+    wcouncil,wcouncil_f,wagree,wagree_f,
+    # covariates
+    sector,profit,emp,empt,empw,firmsize,
+    firmsize_f
+  ) %>% na.omit()
+
 
 
 ## Select those cases with at least 3 repeated observations
 
 ids <-
-  df_c %>% 
+  df_long %>% 
   group_by(idnum) %>% 
   summarize(n=n()) %>% 
   arrange(desc(n)) %>% 
   filter(n>=3) %>% select(idnum) %>% pull
 
-df_c <- df_c %>% filter(idnum %in% ids)
+df_long <- df_long %>% filter(idnum %in% ids)
 
+## save data
 
-# How many repeated observations?
-
-repeated <- 
-  df_c %>% 
-  group_by(idnum) %>% 
-  summarize(n=n()) %>% 
-  arrange(desc(n))
-
-
-summary(repeated)
-
-
-repeated %>% 
-  ggplot(aes(x=n)) +
-  theme_minimal() +
-  geom_bar() +
-  scale_x_continuous(breaks = 2:30) +
-  labs(x="Frequency of repeated observations (n)",
-       y="Count",
-       title = "Distribution of repeated observations (n > 2), [Q1 = 3, median = 4; mean = 5.75, Q3 = 7]")
-  
-
-
-## Number of within establishment change in labor institutions
-
-
-df_c <-
-  df_c %>% 
-  group_by(idnum) %>% 
-  mutate(chng_counc=wcounc_b-lag(wcounc_b),
-         chng_wagree=wagree-lag(wagree)) %>% 
-  ungroup()
-
-
-change_both <-
-  df_c %>% 
-  select(idnum,
-         chng_counc,chng_wagree) %>% 
-  filter(chng_counc != 0 & chng_wagree != 0) %>% 
-  pull(idnum)
-
-
-change_wagree <-
-  df_c %>% 
-  select(idnum,
-         chng_counc,chng_wagree) %>% 
-  filter(chng_wagree != 0) %>% 
-  pull(idnum)
-
-
-change_counc <-
-  df_c %>% 
-  select(idnum,
-         chng_counc,chng_wagree) %>% 
-  filter(chng_counc != 0) %>% 
-  pull(idnum)
-
-
-
-
-
-table(df_c$idnum,df_c$chng_counc)
-
-
-df_c %>% 
-  group_by(idnum) %>% 
-  mutate(chng_counc=wcounc_b-lag(wcounc_b),
-         chng_wagree=wagree-lag(wagree)) %>% 
-  summarize(
-    chng_counc = sum(chng_counc,na.rm=T),
-    chng_wagree = sum(chng_wagree,na.rm=T)
-  ) %>%
-  pivot_longer(cols=c("chng_counc","chng_wagree"),
-               names_to = "institution",
-               values_to = "change") %>% 
-  ggplot(aes(x=change)) +
-  geom_bar() +
-  facet_wrap(~institution)
-
-
-
-df_c %>% 
-  group_by(idnum) %>% 
-  mutate(chng_counc=wcounc_b-lag(wcounc_b),
-         chng_wagree=wagree-lag(wagree)) %>% 
-  summarize(
-    chng_counc = sum(chng_counc,na.rm=T),
-    chng_wagree = sum(chng_wagree,na.rm=T)
-  ) %>%
-  pivot_longer(cols=c("chng_counc","chng_wagree"),
-               names_to = "institution",
-               values_to = "change") %>% 
-  select(institution,change) %>% table()
-
-## colors
-
-purple <- "mediumorchid4"
-blue <- "deepskyblue"
-
-## set general theme
-
-theme_set(cowplot::theme_cowplot())
-
-df_c %>% 
-  ggplot(aes(x=year,
-             y=paypp_ln,
-             color=wcouncil_f,
-             group=idnum)) +
-  geom_line(alpha=0.05) +
-  scale_color_manual(values=c(blue,purple)) +
-  # group level grand means
-  geom_line(stat="smooth", aes(group=wcouncil_f, color=wcouncil_f), method="lm", size=2, alpha=0.9) +
-  # overall grand mean
-  geom_line(stat="smooth", aes(group="1"), color="black", method="lm",  size=2, linetype="dashed", alpha=0.75) +
-  theme(legend.position = "top") +
-  guides(color = guide_legend(title = NULL)) +
-  coord_cartesian(ylim=c(4,10))
-
-
-# width = 6
-# ggsave("output/hw2_2a.pdf", width = width, height = width/1.618)
-
-
-
-df_c %>% 
-  ggplot(aes(x=year,
-             y=paypp_ln,
-             color=wagree_f,
-             group=idnum)) +
-  geom_line(alpha=0.05) +
-  scale_color_manual(values=c(blue,purple)) +
-  # group level grand means
-  geom_line(stat="smooth", aes(group=wagree_f, color=wagree_f), method="lm", size=2, alpha=0.9) +
-  # overall grand mean
-  geom_line(stat="smooth", aes(group="1"), color="black", method="lm",  size=2, linetype="dashed", alpha=0.75) +
-  theme(legend.position = "top") +
-  guides(color = guide_legend(title = NULL)) +
-  coord_cartesian(ylim=c(4,10))
-
-
-
-# sample 10 IDs in treatment and control groups without replacement
-
-set.seed(98765) # setting a seed
-
-sampled_trt <- sample(unique(df_c$idnum[df_c$wcouncil_f=="Presence of Works Council"]), size=10, replace=FALSE)
-sampled_ctrl <- sample(unique(df_c$idnum[df_c$wcouncil_f=="No Works Council"]), size=10, replace=FALSE)
-
-
-df_c %>% 
-  filter(idnum %in% c(sampled_trt,sampled_ctrl)) %>% 
-  ggplot(aes(x=year,
-             y=paypp_ln,
-             color=wcouncil_f,
-             group=idnum)) +
-  geom_line() +
-  geom_point() +
-  scale_color_manual(values=c(purple,blue)) +
-  theme(legend.position = "top") +
-  guides(color = guide_legend(title = NULL))
-
-
-set.seed(98765) # setting a seed
-
-sampled_trt <- sample(unique(df_c$idnum[df_c$wagree_f=="Covered by Sector Agreement"]), size=10, replace=FALSE)
-sampled_ctrl <- sample(unique(df_c$idnum[df_c$wagree_f=="Not Covered"]), size=10, replace=FALSE)
-
-
-df_c %>% 
-  filter(idnum %in% c(sampled_trt,sampled_ctrl)) %>% 
-  ggplot(aes(x=year,
-             y=paypp_ln,
-             color=wagree_f,
-             group=idnum)) +
-  geom_line() +
-  geom_point() +
-  scale_color_manual(values=c(purple,blue)) +
-  theme(legend.position = "top") +
-  guides(color = guide_legend(title = NULL))
-
-
-
-
-
-
-#################### Cleaning and merging datasets ####################
-#######################################################################
-#######################################################################
-
-
-
-
+# write_csv(df_long,file="data/final_project.csv")
+# save(df_long,file = "data/final_project.r")
 
 
 
